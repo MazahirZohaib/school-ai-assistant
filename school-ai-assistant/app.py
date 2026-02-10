@@ -52,25 +52,28 @@ def build_vector_db(text):
 
 
 def gemini_answer(question, context):
-    # Get API key from Streamlit Secrets
-    api_key = st.secrets["GEMINI_API_KEY"]
+    # Get API key from Streamlit Secrets (Streamlit Cloud)
+    api_key = st.secrets.get("GEMINI_API_KEY", "")
 
     if not api_key:
         return "❌ Missing GEMINI_API_KEY. Please add it in Streamlit Secrets."
 
     genai.configure(api_key=api_key)
 
-    # Use the latest stable Gemini model
-    model = genai.GenerativeModel("models/gemini-2.5-flash")
+    # Use a valid Gemini model name
+    model = genai.GenerativeModel("gemini-2.5-flash")
 
     prompt = f"""
 You are a school assistant chatbot.
 
 RULES:
-- Answer using ONLY the context given.
-- If the answer is not found in the context, say exactly:
+- Use the provided context as your main source.
+- You are allowed to explain and reason using the context.
+- If the context does not contain enough information, say exactly:
   "I couldn't find that in the provided school documents."
 - Keep answers clear, short, and student-friendly.
+- If the question needs steps (like physics or math), show steps briefly.
+- Think step-by-step internally before answering, but only show the final answer clearly.
 
 CONTEXT:
 {context}
@@ -83,6 +86,7 @@ ANSWER:
 
     response = model.generate_content(prompt)
     return response.text
+
 
 
 # ----------------------------
@@ -195,7 +199,7 @@ else:
 
         # Retrieve context
         db = st.session_state.db
-        docs = db.similarity_search(question, k=4)
+        docs = db.similarity_search(question, k=8)
         context = "\n\n".join([d.page_content for d in docs])
 
         # Get answer
