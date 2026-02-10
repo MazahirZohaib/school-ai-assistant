@@ -1,8 +1,7 @@
 import os
+import glob
 import streamlit as st
-from dotenv import load_dotenv
 from pypdf import PdfReader
-
 import google.generativeai as genai
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -14,26 +13,31 @@ from langchain_community.vectorstores import FAISS
 # App Config
 # ----------------------------
 st.set_page_config(page_title="School AI Assistant", page_icon="🎓", layout="wide")
-load_dotenv()
 
 
 # ----------------------------
 # Helper Functions
 # ----------------------------
-def extract_text_from_pdfs(pdf_files):
+def extract_text_from_pdfs(pdf_paths):
     combined_text = ""
     per_file_text = []
 
-    for pdf in pdf_files:
-        reader = PdfReader(pdf)
-        text = ""
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
+    for pdf_path in pdf_paths:
+        try:
+            reader = PdfReader(pdf_path)
+            text = ""
 
-        per_file_text.append((pdf.name, text))
-        combined_text += f"\n\n--- DOCUMENT: {pdf.name} ---\n\n{text}"
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+
+            filename = os.path.basename(pdf_path)
+            per_file_text.append((filename, text))
+            combined_text += f"\n\n--- DOCUMENT: {filename} ---\n\n{text}"
+
+        except Exception as e:
+            st.warning(f"⚠️ Could not read {pdf_path}: {e}")
 
     return combined_text, per_file_text
 
@@ -60,7 +64,7 @@ def gemini_answer(question, context):
 
     genai.configure(api_key=api_key)
 
-    # Use a valid Gemini model name
+    # Gemini model
     model = genai.GenerativeModel("gemini-2.5-flash")
 
     prompt = f"""
@@ -88,28 +92,33 @@ ANSWER:
     return response.text
 
 
+# ----------------------------
+# Load Default PDFs
+# ----------------------------
+PDF_FOLDER = "default_pdfs"
+pdf_paths = glob.glob(f"{PDF_FOLDER}/*.pdf")
+
 
 # ----------------------------
 # UI
 # ----------------------------
 st.title("🎓 School AI Assistant")
-st.caption("Upload school PDFs (rules, timetable, syllabus, notes) and ask questions. Answers are based on your documents.")
+st.caption("This assistant uses pre-loaded school documents. Students cannot upload or change files.")
 
+
+# ----------------------------
 # Sidebar
+# ----------------------------
 with st.sidebar:
-    st.header("⚙️ Controls")
+    st.header("📚 Default Documents")
 
-    pdf_files = st.file_uploader(
-        "Upload PDFs",
-        type=["pdf"],
-        accept_multiple_files=True
-    )
-
-    st.markdown("---")
-    st.subheader("📌 Tips")
-    st.write("• Upload **school rules**, **timetable**, **syllabus**, and **notes**.")
-    st.write("• The assistant will answer only using those PDFs.")
-    st.write("• Use the **Sources** dropdown to verify answers.")
+    if len(pdf_paths) == 0:
+        st.error("❌ No default PDFs found.")
+        st.write("Add PDFs inside the folder: `default_pdfs/`")
+    else:
+        st.success(f"✅ Loaded {len(pdf_paths)} default PDF(s).")
+        for p in pdf_paths:
+            st.write("• " + os.path.basename(p))
 
     st.markdown("---")
     reset = st.button("🧹 Reset Chat")
@@ -127,57 +136,39 @@ if "docs_loaded" not in st.session_state:
 if "chat" not in st.session_state:
     st.session_state.chat = []
 
+
 if reset:
     st.session_state.chat = []
-    st.session_state.db = None
-    st.session_state.docs_loaded = False
     st.rerun()
 
 
 # ----------------------------
-# Build DB Button
+# Auto Build Knowledge Base
 # ----------------------------
-colA, colB = st.columns([1, 1])
+if len(pdf_paths) > 0 and not st.session_state.docs_loaded:
+    with st.spinner("Building knowledge base from default PDFs..."):
+        combined_text, per_file_text = extract_text_from_pdfs(pdf_paths)
 
-with colA:
-    st.subheader("1) Upload Documents")
-
-with colB:
-    st.subheader("2) Build Knowledge Base")
-
-
-if pdf_files and len(pdf_files) > 0:
-    st.success(f"✅ {len(pdf_files)} PDF(s) uploaded.")
-
-    if st.button("📚 Build / Rebuild Knowledge Base"):
-        with st.spinner("Reading PDFs and building vector database..."):
-            combined_text, per_file_text = extract_text_from_pdfs(pdf_files)
-
-            if len(combined_text.strip()) < 200:
-                st.error("❌ Not enough readable text found in the PDFs. Try different PDFs (not scanned images).")
-            else:
-                db, chunks = build_vector_db(combined_text)
-                st.session_state.db = db
-                st.session_state.docs_loaded = True
-
-        if st.session_state.docs_loaded:
-            st.success("✅ Knowledge base built successfully!")
-            st.info("Now ask questions in the chat below.")
-
-else:
-    st.warning("Upload at least 1 PDF to begin.")
-
-
-st.markdown("---")
+        if len(combined_text.strip()) < 200:
+            st.error("❌ Not enough readable text found in the default PDFs.")
+        else:
+            db, chunks = build_vector_db(combined_text)
+            st.session_state.db = db
+            st.session_state.docs_loaded = True
 
 
 # ----------------------------
 # Chat UI
 # ----------------------------
+st.markdown("---")
 st.subheader("💬 Chat")
 
-if not st.session_state.docs_loaded:
-    st.write("Upload PDFs and build the knowledge base first.")
+if len(pdf_paths) == 0:
+    st.warning("No default PDFs found. Add PDFs to `default_pdfs/` and restart the app.")
+
+elif not st.session_state.docs_loaded:
+    st.warning("Knowledge base is not ready yet. Check your PDFs and try again.")
+
 else:
     # Show chat history
     for msg in st.session_state.chat:
@@ -190,8 +181,7 @@ else:
             st.markdown(f"**🤖 Assistant:** {content}")
 
     st.markdown("")
-
-    question = st.text_input("Ask a question from your school documents:")
+    question = st.text_input("Ask a question from the school documents:")
 
     if st.button("Ask") and question.strip():
         # Add user message
